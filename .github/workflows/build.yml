@@ -26,6 +26,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # Android SDK 36: lo necesita MPV (si falla, la compilación sigue sin MPV)
+      - name: Instalar Android SDK 36
+        continue-on-error: true
+        run: |
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"; fi
+          if [ ! -x "$SDKM" ]; then SDKM="$(find "$ANDROID_HOME" "$ANDROID_SDK_ROOT" /usr/local/lib/android -name sdkmanager -type f 2>/dev/null | head -1)"; fi
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-36" "build-tools;36.0.0"
+
       - name: Install dependencies
         run: npm install
 
@@ -81,4 +91,5 @@ jobs:
           name: ULTRA4K APK ${{ github.run_number }}
           files: dist/ULTRA4K.apk
           make_latest: true
+
           
