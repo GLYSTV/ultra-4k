@@ -271,8 +271,9 @@ public class NativePlayerPlugin extends Plugin {
     String url = call.getString("url");
     if (url == null) { call.reject("Falta la url"); return; }
     String engine = call.getString("engine", "auto");
-    Intent i = new Intent(getContext(),
-        "vlc".equals(engine) ? VlcPlayerActivity.class : PlayerActivity.class);
+    Class<?> target = "vlc".equals(engine) ? VlcPlayerActivity.class
+        : ("mpv".equals(engine) ? AltPlayerActivity.class : PlayerActivity.class);
+    Intent i = new Intent(getContext(), target);
     i.putExtra("engine", engine);
     i.putExtra("url", url);
     i.putExtra("title", call.getString("title", ""));
@@ -930,6 +931,7 @@ public class VlcPlayerActivity extends Activity {
           status.setText("Probando formato .ts…");
           start();
         } else {
+          if (getIntent().getBooleanExtra("fromExo", false) && launchMpv()) break;
           status.setText("VLC no pudo reproducir este contenido.");
           showBar(true);
         }
@@ -939,6 +941,22 @@ public class VlcPlayerActivity extends Activity {
         if (qIdx + 1 < qUrls.length) playNext(); else finish();
         break;
       default: break;
+    }
+  }
+
+  /* Último respaldo: abre el mismo contenido con MPV (libmpv) */
+  private boolean launchMpv() {
+    try {
+      android.content.Intent i = new android.content.Intent(this, AltPlayerActivity.class);
+      i.putExtra("url", url);
+      String t = getIntent().getStringExtra("title");
+      i.putExtra("title", t == null ? "" : t);
+      i.putExtra("engine", "mpv");
+      startActivity(i);
+      finish();
+      return true;
+    } catch (Throwable t) {
+      return false;
     }
   }
 
@@ -1478,6 +1496,7 @@ public class PlayerActivity extends Activity {
     android.content.Intent i = new android.content.Intent(this, VlcPlayerActivity.class);
     i.putExtras(getIntent());
     i.putExtra("engine", "vlc");
+    i.putExtra("fromExo", true);
     if (qUrls.length > 0 && qIdx < qUrls.length) {
       i.putExtra("url", qUrls[qIdx]);
       i.putExtra("idx", qIdx);
@@ -1847,6 +1866,718 @@ JAVA
 mkdir -p android/app/src/main/assets
 mkdir -p android/app/src/main/assets/fonts
 cp fonts/*.ttf android/app/src/main/assets/fonts/ 2>/dev/null || true
+cat > $PKG/AltPlayerActivity.java <<'ALTJAVA'
+package com.glystv.app;
+
+import android.app.Activity;
+import android.graphics.Color;
+import android.graphics.PorterDuff;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+
+/*
+ * Reproductores de respaldo: VLC (LibVLC) y MPV (libmpv).
+ * Se usan SOLO cuando ExoPlayer no puede abrir un contenido (o si el usuario los elige a mano).
+ * Las librerías se llaman por reflexión: si alguna no está en la APK, ese reproductor se omite
+ * y la app sigue funcionando con normalidad.
+ */
+public class AltPlayerActivity extends Activity implements SurfaceHolder.Callback {
+  private static final int ACCENT = Color.rgb(124,190,48);
+  private static final String UA = "VLC/3.0.18 LibVLC/3.0.18";
+  private static final long TIMEOUT_MS = 22000;
+  private static final Object MPV_LOCK = new Object();
+  private static final String[] ASP = {"Normal", "16:9", "4:3", "Llenar"};
+
+  private final Handler h = new Handler(Looper.getMainLooper());
+  private FrameLayout root;
+  private SurfaceView sv;
+  private LinearLayout ovl;
+  private TextView tTitle, tEngine, tStatus, tTime, tHint;
+  private ProgressBar bar;
+
+  private String[] urls = new String[0];
+  private String title = "";
+  private long startPos = 0;
+  private final ArrayList<String[]> attempts = new ArrayList<>(); /* {motor, url} */
+  private int attemptIdx = -1;
+  private String engine = "";
+  private String curUrl = "";
+
+  private boolean engineStarted = false, started = false, destroyed = false, finalFail = false;
+  private boolean isLive = false;
+  private long t0 = 0;
+  private int aspect = 0;
+  private final StringBuilder errLog = new StringBuilder();
+
+  /* VLC */
+  private Object libVlc, vlcMp, vlcVout;
+  /* MPV */
+  private boolean mpvUp = false;
+  private Class<?> mpvCls;
+  private Object mpvObj = null; /* libmpv 1.0.0: create() devuelve una instancia; los demás métodos son de instancia */
+
+  /* ===================== Reflexión ===================== */
+  private static Class<?> wrap(Class<?> c) {
+    if (!c.isPrimitive()) return c;
+    if (c == int.class) return Integer.class;
+    if (c == long.class) return Long.class;
+    if (c == boolean.class) return Boolean.class;
+    if (c == float.class) return Float.class;
+    if (c == double.class) return Double.class;
+    if (c == short.class) return Short.class;
+    if (c == byte.class) return Byte.class;
+    if (c == char.class) return Character.class;
+    return c;
+  }
+
+  private static boolean fits(Class<?>[] pt, Object[] a) {
+    if (pt.length != a.length) return false;
+    for (int i = 0; i < pt.length; i++) {
+      if (a[i] == null) {
+        if (pt[i].isPrimitive()) return false;
+        continue;
+      }
+      if (!wrap(pt[i]).isAssignableFrom(a[i].getClass())) return false;
+    }
+    return true;
+  }
+
+  /* Llama a un método por nombre (estático, de instancia o de un objeto Kotlin "INSTANCE") */
+  private static Object inv(Object target, Class<?> c, String name, Object... a) throws Exception {
+    Object recv = target;
+    for (int pass = 0; pass < 2; pass++) {
+      for (Method m : c.getMethods()) {
+        if (!m.getName().equals(name) || !fits(m.getParameterTypes(), a)) continue;
+        boolean st = Modifier.isStatic(m.getModifiers());
+        if (recv == null && !st) continue;
+        m.setAccessible(true);
+        try {
+          return m.invoke(st ? null : recv, a);
+        } catch (InvocationTargetException ite) {
+          Throwable cause = ite.getCause();
+          if (cause instanceof Exception) throw (Exception) cause;
+          throw ite;
+        }
+      }
+      if (pass == 0 && recv == null) {
+        try {
+          Field f = c.getField("INSTANCE");
+          recv = f.get(null);
+        } catch (Throwable t) {
+          break;
+        }
+        if (recv == null) break;
+      } else {
+        break;
+      }
+    }
+    throw new NoSuchMethodException(c.getSimpleName() + "." + name + "/" + a.length);
+  }
+
+  private static Object call(Object target, String name, Object... a) throws Exception {
+    return inv(target, target.getClass(), name, a);
+  }
+
+  private static Object build(Class<?> c, Object... a) throws Exception {
+    for (Constructor<?> k : c.getConstructors()) {
+      if (!fits(k.getParameterTypes(), a)) continue;
+      try {
+        return k.newInstance(a);
+      } catch (InvocationTargetException ite) {
+        Throwable cause = ite.getCause();
+        if (cause instanceof Exception) throw (Exception) cause;
+        throw ite;
+      }
+    }
+    throw new NoSuchMethodException(c.getSimpleName() + ".<init>/" + a.length);
+  }
+
+  private static int fieldInt(Object o, String n, int def) {
+    try {
+      return o.getClass().getField(n).getInt(o);
+    } catch (Throwable t) {
+      return def;
+    }
+  }
+
+  private static String fieldStr(Object o, String n) {
+    try {
+      Object v = o.getClass().getField(n).get(o);
+      return v == null ? "" : String.valueOf(v);
+    } catch (Throwable t) {
+      return "";
+    }
+  }
+
+  private boolean isVlc() { return "vlc".equals(engine); }
+
+  /* ===================== Ciclo de vida ===================== */
+  @Override
+  protected void onCreate(Bundle b) {
+    super.onCreate(b);
+    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    getWindow().getDecorView().setSystemUiVisibility(
+        View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+
+    String u0 = getIntent().getStringExtra("url");
+    String[] us = getIntent().getStringArrayExtra("urls");
+    if (us == null || us.length == 0) us = new String[]{u0 == null ? "" : u0};
+    urls = us;
+    String t = getIntent().getStringExtra("title");
+    title = t == null ? "" : t;
+    startPos = getIntent().getLongExtra("pos", 0);
+    String first = getIntent().getStringExtra("engine");
+
+    /* Orden de intentos: VLC con hasta 2 enlaces y después MPV con el enlace original */
+    if (!"mpv".equals(first)) {
+      for (int i = 0; i < urls.length && i < 2; i++) attempts.add(new String[]{"vlc", urls[i]});
+    }
+    attempts.add(new String[]{"mpv", urls[0]});
+
+    buildUi();
+    h.postDelayed(tick, 500);
+    nextAttempt();
+  }
+
+  private TextView mkText(int sp, int color) {
+    TextView v = new TextView(this);
+    v.setTextColor(color);
+    v.setTextSize(sp);
+    v.setShadowLayer(4f, 0f, 0f, Color.BLACK);
+    return v;
+  }
+
+  private void buildUi() {
+    final float dn = getResources().getDisplayMetrics().density;
+    root = new FrameLayout(this);
+    root.setBackgroundColor(Color.BLACK);
+
+    ovl = new LinearLayout(this);
+    ovl.setOrientation(LinearLayout.VERTICAL);
+    ovl.setPadding((int) (28 * dn), (int) (18 * dn), (int) (28 * dn), (int) (18 * dn));
+
+    LinearLayout top = new LinearLayout(this);
+    top.setOrientation(LinearLayout.HORIZONTAL);
+    tTitle = mkText(20, Color.WHITE);
+    tTitle.setText(title);
+    tTitle.setSingleLine(true);
+    top.addView(tTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+    tEngine = mkText(13, Color.WHITE);
+    tEngine.setBackgroundColor(ACCENT);
+    tEngine.setPadding((int) (10 * dn), (int) (4 * dn), (int) (10 * dn), (int) (4 * dn));
+    top.addView(tEngine, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    ovl.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+    View spacer = new View(this);
+    ovl.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
+
+    bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    bar.setMax(1000);
+    try { bar.getProgressDrawable().setColorFilter(ACCENT, PorterDuff.Mode.SRC_IN); } catch (Throwable t) { /* opcional */ }
+    ovl.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (int) (6 * dn)));
+    tTime = mkText(15, Color.WHITE);
+    ovl.addView(tTime, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    tHint = mkText(12, Color.LTGRAY);
+    tHint.setText("OK pausa · ◀ ▶ ±10 s · ▲ audio · ▼ subtítulos · MENÚ aspecto");
+    ovl.addView(tHint, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+    root.addView(ovl, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+    tStatus = mkText(18, Color.WHITE);
+    tStatus.setGravity(Gravity.CENTER);
+    tStatus.setBackgroundColor(Color.argb(190, 12, 10, 30));
+    tStatus.setPadding((int) (22 * dn), (int) (14 * dn), (int) (22 * dn), (int) (14 * dn));
+    FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    sp.gravity = Gravity.CENTER;
+    root.addView(tStatus, sp);
+    setContentView(root);
+  }
+
+  private final Runnable hideOvl = new Runnable() {
+    @Override public void run() { if (ovl != null && started) ovl.setVisibility(View.INVISIBLE); }
+  };
+
+  private void showOvl() {
+    if (ovl == null) return;
+    ovl.setVisibility(View.VISIBLE);
+    h.removeCallbacks(hideOvl);
+    h.postDelayed(hideOvl, 4500);
+  }
+
+  private void say(String m) {
+    tStatus.setText(m);
+    tStatus.setVisibility(View.VISIBLE);
+    h.removeCallbacks(clearSay);
+    h.postDelayed(clearSay, 1800);
+  }
+
+  private final Runnable clearSay = new Runnable() {
+    @Override public void run() { if (started && !finalFail) { tStatus.setText(""); tStatus.setVisibility(View.GONE); } }
+  };
+
+  /* ===================== Intentos ===================== */
+  private void nextAttempt() {
+    if (destroyed) return;
+    releaseEngines();
+    attemptIdx++;
+    if (attemptIdx >= attempts.size()) { showFinalError(); return; }
+    String[] a = attempts.get(attemptIdx);
+    engine = a[0];
+    curUrl = a[1];
+    started = false;
+    engineStarted = false;
+    isLive = !(curUrl.contains("/movie/") || curUrl.contains("/series/"));
+    t0 = SystemClock.elapsedRealtime();
+    tEngine.setText(isVlc() ? "VLC" : "MPV");
+    tStatus.setVisibility(View.VISIBLE);
+    tStatus.setText("Probando con " + (isVlc() ? "VLC" : "MPV") + "…");
+    ovl.setVisibility(View.VISIBLE);
+    bar.setProgress(0);
+    tTime.setText("");
+
+    if (sv != null) {
+      try { sv.getHolder().removeCallback(this); root.removeView(sv); } catch (Throwable t) { /* ignorar */ }
+    }
+    sv = new SurfaceView(this);
+    sv.getHolder().addCallback(this);
+    root.addView(sv, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+  }
+
+  private void failAttempt(String why) {
+    if (destroyed) return;
+    errLog.append(isVlc() ? "VLC: " : "MPV: ").append(why).append("\n");
+    nextAttempt();
+  }
+
+  private void showFinalError() {
+    finalFail = true;
+    started = false;
+    releaseEngines();
+    try { if (sv != null) root.removeView(sv); } catch (Throwable t) { /* ignorar */ }
+    sv = null;
+    ovl.setVisibility(View.VISIBLE);
+    tTime.setText("");
+    tEngine.setText("ExoPlayer · VLC · MPV");
+    tStatus.setVisibility(View.VISIBLE);
+    String d = errLog.toString().trim();
+    if (d.length() > 220) d = d.substring(0, 220);
+    tStatus.setText("Ningún reproductor pudo abrir este contenido.\nPuede estar caído en el servidor.\n" + d + "\n\nPulsa Atrás para salir.");
+  }
+
+  /* ===================== Superficie ===================== */
+  @Override
+  public void surfaceCreated(SurfaceHolder holder) {
+    if (destroyed || finalFail || engineStarted) return;
+    engineStarted = true;
+    try {
+      if (isVlc()) startVlc(); else startMpv();
+    } catch (Throwable t) {
+      String m = t.getClass().getSimpleName() + (t.getMessage() == null ? "" : ": " + t.getMessage());
+      if (m.length() > 90) m = m.substring(0, 90);
+      engineStarted = false;
+      failAttempt(m);
+    }
+  }
+
+  @Override
+  public void surfaceChanged(SurfaceHolder holder, int format, int w, int hh) {
+    try {
+      if (isVlc() && vlcVout != null) call(vlcVout, "setWindowSize", Integer.valueOf(w), Integer.valueOf(hh));
+      else if (!isVlc() && mpvUp) inv(mpvObj, mpvCls, "setPropertyString", "android-surface-size", w + "x" + hh);
+    } catch (Throwable t) { /* opcional */ }
+  }
+
+  @Override
+  public void surfaceDestroyed(SurfaceHolder holder) { /* la liberación se hace en releaseEngines() */ }
+
+  /* ===================== VLC ===================== */
+  private void startVlc() throws Exception {
+    Class<?> cLib = Class.forName("org.videolan.libvlc.LibVLC");
+    ArrayList<String> o = new ArrayList<>();
+    o.add("--network-caching=3000");
+    o.add("--live-caching=3000");
+    o.add("--file-caching=3000");
+    o.add("--http-reconnect");
+    o.add("--http-user-agent=" + UA);
+    libVlc = build(cLib, getApplicationContext(), o);
+    Class<?> cMp = Class.forName("org.videolan.libvlc.MediaPlayer");
+    vlcMp = build(cMp, libVlc);
+    vlcVout = call(vlcMp, "getVLCVout");
+    call(vlcVout, "setVideoView", sv);
+    call(vlcVout, "attachViews");
+    try { call(vlcVout, "setWindowSize", Integer.valueOf(sv.getWidth()), Integer.valueOf(sv.getHeight())); } catch (Throwable t) { /* opcional */ }
+
+    Class<?> cMedia = Class.forName("org.videolan.libvlc.Media");
+    Object media = build(cMedia, libVlc, android.net.Uri.parse(curUrl));
+    try { call(media, "addOption", ":network-caching=3000"); } catch (Throwable t) { /* opcional */ }
+    try { call(media, "addOption", ":http-reconnect"); } catch (Throwable t) { /* opcional */ }
+    try { call(media, "setHWDecoderEnabled", Boolean.TRUE, Boolean.FALSE); } catch (Throwable t) { /* opcional */ }
+    call(vlcMp, "setMedia", media);
+    try { call(media, "release"); } catch (Throwable t) { /* opcional */ }
+    call(vlcMp, "play");
+  }
+
+  /* 0 cargando, 1 reproduciendo, 2 pausa, 3 terminó, 4 error */
+  private int vlcState() {
+    if (vlcMp == null) return 0;
+    try {
+      int s = ((Number) call(vlcMp, "getPlayerState")).intValue();
+      if (s == 3) return 1;
+      if (s == 4) return 2;
+      if (s == 6) return 3;
+      if (s == 7) return 4;
+      if (s == 5) return started ? 3 : 0;
+      return 0;
+    } catch (Throwable t) {
+      try {
+        return Boolean.TRUE.equals(call(vlcMp, "isPlaying")) ? 1 : 0;
+      } catch (Throwable t2) {
+        return 0;
+      }
+    }
+  }
+
+  private void releaseVlc() {
+    final Object mp = vlcMp, lib = libVlc, vo = vlcVout;
+    vlcMp = null;
+    libVlc = null;
+    vlcVout = null;
+    if (mp == null) return;
+    try { if (vo != null) call(vo, "detachViews"); } catch (Throwable t) { /* ignorar */ }
+    new Thread(new Runnable() {
+      @Override public void run() {
+        try { call(mp, "stop"); } catch (Throwable t) { /* ignorar */ }
+        try { call(mp, "release"); } catch (Throwable t) { /* ignorar */ }
+        try { if (lib != null) call(lib, "release"); } catch (Throwable t) { /* ignorar */ }
+      }
+    }).start();
+  }
+
+  private void vlcCycleTrack(boolean audio) {
+    try {
+      Object[] arr = (Object[]) call(vlcMp, audio ? "getAudioTracks" : "getSpuTracks");
+      if (arr == null || arr.length == 0) { say(audio ? "Sin pistas de audio" : "Sin subtítulos"); return; }
+      int cur = ((Number) call(vlcMp, audio ? "getAudioTrack" : "getSpuTrack")).intValue();
+      int idx = -1;
+      for (int i = 0; i < arr.length; i++) if (fieldInt(arr[i], "id", -2) == cur) idx = i;
+      idx = (idx + 1) % arr.length;
+      call(vlcMp, audio ? "setAudioTrack" : "setSpuTrack", Integer.valueOf(fieldInt(arr[idx], "id", -1)));
+      String n = fieldStr(arr[idx], "name");
+      say((audio ? "Audio: " : "Subtítulos: ") + (n.isEmpty() ? "pista " + (idx + 1) : n));
+    } catch (Throwable t) {
+      say(audio ? "No se pudo cambiar el audio" : "No se pudieron cambiar los subtítulos");
+    }
+  }
+
+  /* ===================== MPV ===================== */
+  private void mpvOpt(String n, String v) {
+    try { inv(mpvObj, mpvCls, "setOptionString", n, v); } catch (Throwable t) { /* opción no soportada */ }
+  }
+
+  private void mpvCmd(String... c) throws Exception {
+    inv(mpvObj, mpvCls, "command", (Object) c);
+  }
+
+  private void startMpv() throws Exception {
+    synchronized (MPV_LOCK) {
+      mpvCls = Class.forName("dev.jdtech.mpv.MPVLib");
+      mpvObj = null;
+      Object created;
+      try {
+        created = inv(null, mpvCls, "create", getApplicationContext());
+      } catch (NoSuchMethodException nsm) {
+        created = inv(null, mpvCls, "create", getApplicationContext(), "v");
+      }
+      /* libmpv 1.0.0: create() devuelve la instancia (MPVLib). En versiones viejas devuelve nada y todo es estático. */
+      if (created != null && mpvCls.isInstance(created)) mpvObj = created;
+      mpvUp = true;
+      mpvOpt("vo", "gpu");
+      mpvOpt("gpu-context", "android");
+      mpvOpt("opengl-es", "yes");
+      mpvOpt("hwdec", "mediacodec,mediacodec-copy");
+      mpvOpt("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1");
+      mpvOpt("ao", "audiotrack,opensles");
+      mpvOpt("user-agent", UA);
+      mpvOpt("cache", "yes");
+      mpvOpt("cache-secs", "20");
+      mpvOpt("demuxer-max-bytes", "67108864");
+      mpvOpt("network-timeout", "20");
+      mpvOpt("tls-verify", "no");
+      mpvOpt("keep-open", "no");
+      mpvOpt("idle", "yes");
+      mpvOpt("save-position-on-quit", "no");
+      /* La superficie se conecta ANTES de init() (libmpv 1.0.0 lo exige) */
+      inv(mpvObj, mpvCls, "attachSurface", sv.getHolder().getSurface());
+      mpvOpt("force-window", "yes");
+      inv(mpvObj, mpvCls, "init");
+      try { inv(mpvObj, mpvCls, "setPropertyString", "vo", "gpu"); } catch (Throwable t) { /* opcional */ }
+      long sec = startPos / 1000;
+      if (!isLive && sec > 10) mpvCmd("loadfile", curUrl, "replace", "-1", "start=" + sec);
+      else mpvCmd("loadfile", curUrl);
+    }
+  }
+
+  private Double mpvD(String n) {
+    try {
+      Object o = inv(mpvObj, mpvCls, "getPropertyDouble", n);
+      return o instanceof Number ? Double.valueOf(((Number) o).doubleValue()) : null;
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  private Boolean mpvB(String n) {
+    try {
+      Object o = inv(mpvObj, mpvCls, "getPropertyBoolean", n);
+      return o instanceof Boolean ? (Boolean) o : null;
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  private int mpvState() {
+    if (!mpvUp) return 0;
+    Double tp = mpvD("time-pos");
+    Boolean idle = mpvB("idle-active");
+    long el = SystemClock.elapsedRealtime() - t0;
+    if (tp != null) return Boolean.TRUE.equals(mpvB("pause")) ? 2 : 1;
+    if (Boolean.TRUE.equals(idle) && el > 4000) return started ? 3 : 4;
+    return 0;
+  }
+
+  private void releaseMpv() {
+    if (!mpvUp) return;
+    mpvUp = false;
+    final Class<?> c = mpvCls;
+    final Object inst = mpvObj;
+    try { mpvCmd("stop"); } catch (Throwable t) { /* ignorar */ }
+    try { inv(inst, c, "detachSurface"); } catch (Throwable t) { /* ignorar */ }
+    new Thread(new Runnable() {
+      @Override public void run() {
+        synchronized (MPV_LOCK) {
+          try { inv(inst, c, "destroy"); } catch (Throwable t) { /* ignorar */ }
+        }
+      }
+    }).start();
+  }
+
+  /* ===================== Sondeo de estado ===================== */
+  private final Runnable tick = new Runnable() {
+    @Override public void run() {
+      if (destroyed) return;
+      try { poll(); } catch (Throwable t) { /* ignorar */ }
+      h.postDelayed(this, 500);
+    }
+  };
+
+  private void poll() {
+    if (finalFail || attemptIdx < 0 || attemptIdx >= attempts.size()) return;
+    long now = SystemClock.elapsedRealtime();
+    if (!engineStarted) {
+      if (now - t0 > TIMEOUT_MS) failAttempt("no se pudo iniciar");
+      return;
+    }
+    int st = isVlc() ? vlcState() : mpvState();
+    if (st == 1 || st == 2) {
+      if (!started) {
+        started = true;
+        tStatus.setText("");
+        tStatus.setVisibility(View.GONE);
+        if (isVlc() && !isLive && startPos > 10000) {
+          try { call(vlcMp, "setTime", Long.valueOf(startPos)); } catch (Throwable t) { /* opcional */ }
+        }
+        showOvl();
+      }
+      updateBar();
+    } else if (st == 4) {
+      failAttempt(started ? "error durante la reproducción" : "no pudo abrir el contenido");
+    } else if (st == 3) {
+      if (started) finish(); else failAttempt("terminó sin reproducir");
+    } else if (!started && now - t0 > TIMEOUT_MS) {
+      failAttempt("sin respuesta en " + (TIMEOUT_MS / 1000) + " s");
+    }
+  }
+
+  private static String fmt(long ms) {
+    long s = Math.max(0, ms / 1000);
+    long hh = s / 3600, mm = (s % 3600) / 60, ss = s % 60;
+    return hh > 0 ? String.format(java.util.Locale.US, "%d:%02d:%02d", hh, mm, ss)
+                  : String.format(java.util.Locale.US, "%02d:%02d", mm, ss);
+  }
+
+  private void updateBar() {
+    long pos = 0, len = 0;
+    try {
+      if (isVlc()) {
+        pos = ((Number) call(vlcMp, "getTime")).longValue();
+        len = ((Number) call(vlcMp, "getLength")).longValue();
+      } else {
+        Double p = mpvD("time-pos"), d = mpvD("duration");
+        pos = p == null ? 0 : (long) (p * 1000);
+        len = d == null ? 0 : (long) (d * 1000);
+      }
+    } catch (Throwable t) { /* ignorar */ }
+    if (len > 0) {
+      bar.setVisibility(View.VISIBLE);
+      bar.setProgress((int) Math.min(1000, pos * 1000 / len));
+      tTime.setText(fmt(pos) + " / " + fmt(len));
+    } else {
+      bar.setVisibility(View.INVISIBLE);
+      tTime.setText("EN VIVO");
+    }
+  }
+
+  /* ===================== Control remoto ===================== */
+  private boolean paused() {
+    try {
+      if (isVlc()) return !Boolean.TRUE.equals(call(vlcMp, "isPlaying"));
+      return Boolean.TRUE.equals(mpvB("pause"));
+    } catch (Throwable t) { return false; }
+  }
+
+  private void togglePause() {
+    try {
+      if (isVlc()) {
+        if (paused()) call(vlcMp, "play"); else call(vlcMp, "pause");
+      } else {
+        mpvCmd("cycle", "pause");
+      }
+    } catch (Throwable t) { /* ignorar */ }
+  }
+
+  private void seekBy(int sec) {
+    if (isLive) return;
+    try {
+      if (isVlc()) {
+        long cur = ((Number) call(vlcMp, "getTime")).longValue();
+        call(vlcMp, "setTime", Long.valueOf(Math.max(0, cur + sec * 1000L)));
+      } else {
+        mpvCmd("seek", String.valueOf(sec), "relative");
+      }
+      say((sec > 0 ? "▶▶ +" : "◀◀ ") + sec + " s");
+    } catch (Throwable t) { /* ignorar */ }
+  }
+
+  private void cycleAspect() {
+    aspect = (aspect + 1) % ASP.length;
+    try {
+      if (isVlc()) {
+        String v = null;
+        if (aspect == 1) v = "16:9";
+        else if (aspect == 2) v = "4:3";
+        else if (aspect == 3) v = getResources().getDisplayMetrics().widthPixels + ":" + getResources().getDisplayMetrics().heightPixels;
+        call(vlcMp, "setAspectRatio", v);
+      } else {
+        inv(mpvObj, mpvCls, "setPropertyString", "keepaspect", aspect == 3 ? "no" : "yes");
+        inv(mpvObj, mpvCls, "setPropertyString", "video-aspect-override",
+            aspect == 1 ? "1.7778" : aspect == 2 ? "1.3333" : "-1");
+      }
+      say("Aspecto: " + ASP[aspect]);
+    } catch (Throwable t) { say("No se pudo cambiar el aspecto"); }
+  }
+
+  private void cycleTrack(boolean audio) {
+    if (!started) return;
+    if (isVlc()) { vlcCycleTrack(audio); return; }
+    try {
+      mpvCmd("cycle", audio ? "audio" : "sub");
+      say(audio ? "Audio: siguiente pista" : "Subtítulos: siguiente opción");
+    } catch (Throwable t) { say("No se pudo cambiar"); }
+  }
+
+  @Override
+  public boolean dispatchKeyEvent(KeyEvent e) {
+    if (e.getAction() == KeyEvent.ACTION_DOWN && !finalFail) {
+      int k = e.getKeyCode();
+      if (k != KeyEvent.KEYCODE_BACK) showOvl();
+      if (started) {
+        switch (k) {
+          case KeyEvent.KEYCODE_DPAD_CENTER:
+          case KeyEvent.KEYCODE_ENTER:
+          case KeyEvent.KEYCODE_NUMPAD_ENTER:
+          case KeyEvent.KEYCODE_SPACE:
+          case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            if (e.getRepeatCount() == 0) togglePause();
+            return true;
+          case KeyEvent.KEYCODE_MEDIA_PLAY:
+            if (paused()) togglePause();
+            return true;
+          case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            if (!paused()) togglePause();
+            return true;
+          case KeyEvent.KEYCODE_DPAD_LEFT:
+          case KeyEvent.KEYCODE_MEDIA_REWIND:
+            seekBy(-10);
+            return true;
+          case KeyEvent.KEYCODE_DPAD_RIGHT:
+          case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            seekBy(10);
+            return true;
+          case KeyEvent.KEYCODE_DPAD_UP:
+            if (e.getRepeatCount() == 0) cycleTrack(true);
+            return true;
+          case KeyEvent.KEYCODE_DPAD_DOWN:
+            if (e.getRepeatCount() == 0) cycleTrack(false);
+            return true;
+          case KeyEvent.KEYCODE_MENU:
+          case KeyEvent.KEYCODE_INFO:
+            if (e.getRepeatCount() == 0) cycleAspect();
+            return true;
+          default:
+            break;
+        }
+      }
+    }
+    return super.dispatchKeyEvent(e);
+  }
+
+  /* ===================== Cierre ===================== */
+  private void releaseEngines() {
+    try { releaseVlc(); } catch (Throwable t) { /* ignorar */ }
+    try { releaseMpv(); } catch (Throwable t) { /* ignorar */ }
+  }
+
+  @Override
+  protected void onPause() {
+    try {
+      if (started) {
+        if (isVlc()) { if (!paused()) call(vlcMp, "pause"); }
+        else if (!paused()) mpvCmd("cycle", "pause");
+      }
+    } catch (Throwable t) { /* ignorar */ }
+    super.onPause();
+  }
+
+  @Override
+  protected void onDestroy() {
+    destroyed = true;
+    h.removeCallbacksAndMessages(null);
+    releaseEngines();
+    super.onDestroy();
+  }
+}
+ALTJAVA
+
 cat > $PKG/RemoteSetupPlugin.java <<'RSJAVA'
 package com.glystv.app;
 
@@ -2126,11 +2857,57 @@ fi
 sed -i 's#<application#<application android:usesCleartextTraffic="true"#' $MAN
 sed -i 's#</application>#    <activity android:name=".PlayerActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />\n    </application>#' $MAN
 sed -i 's#</application>#    <activity android:name=".VlcPlayerActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />\n    </application>#' $MAN
+sed -i 's#</application>#    <activity android:name=".AltPlayerActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />\n    </application>#' $MAN
 sed -i '/^dependencies {/a\    implementation "androidx.media3:media3-exoplayer:1.4.1"\n    implementation "androidx.media3:media3-exoplayer-hls:1.4.1"\n    implementation "androidx.media3:media3-ui:1.4.1"\n    implementation "org.jellyfin.media3:media3-ffmpeg-decoder:1.4.1+1"\n    implementation "org.videolan.android:libvlc-all:3.6.0"' android/app/build.gradle
 sed -i '/defaultConfig {/a\        ndk { abiFilters "armeabi-v7a", "arm64-v8a" }' android/app/build.gradle
 
 # versionCode debe subir en cada compilación para que Android acepte la actualización
 sed -i "s/versionCode [0-9]\+/versionCode ${VC}/; s/versionName \"[^\"]*\"/versionName \"3.0.${VC}\"/" android/app/build.gradle
+
+# ---- MPV (libmpv): tercer reproductor de respaldo (ExoPlayer -> VLC -> MPV) ----
+# Necesita minSdk 26 (Android 8.0+) y herramientas Android más nuevas. Se guarda copia de los archivos de
+# Gradle ANTES de tocarlos: si la compilación con MPV falla, se restauran y se compila sin MPV (ExoPlayer + VLC).
+rm -rf .mpvbak && mkdir .mpvbak
+cp android/build.gradle .mpvbak/root.build.gradle
+cp android/app/build.gradle .mpvbak/app.build.gradle
+cp android/gradle/wrapper/gradle-wrapper.properties .mpvbak/wrapper.properties
+[ -f android/variables.gradle ] && cp android/variables.gradle .mpvbak/variables.gradle || true
+[ -f android/gradle.properties ] && cp android/gradle.properties .mpvbak/gradle.properties || true
+MPV_ON=1
+sed -i '/^dependencies {/a\    implementation "dev.jdtech.mpv:libmpv:1.0.0"' android/app/build.gradle
+cat >> android/app/build.gradle <<'MPVGRADLE'
+
+// ultra-mpv: VLC y MPV traen librerías nativas repetidas
+android {
+    packaging {
+        jniLibs {
+            pickFirsts.add('**/libc++_shared.so')
+            useLegacyPackaging = true
+        }
+    }
+}
+MPVGRADLE
+sed -i -E "s#(com\.android\.tools\.build:gradle:)[0-9][0-9.]*#\18.10.1#" android/build.gradle
+sed -i -E "s#gradle-[0-9][0-9.]*-(all|bin)\.zip#gradle-8.11.1-all.zip#" android/gradle/wrapper/gradle-wrapper.properties
+python3 - <<'MPVSDK'
+import re,os
+p='android/variables.gradle'
+if os.path.exists(p):
+    s=open(p,encoding='utf-8').read()
+    def bump(name,val,s):
+        m=re.search(r'(%s\s*=\s*)(\d+)'%name,s)
+        if m and int(m.group(2))<val:
+            s=s[:m.start(2)]+str(val)+s[m.end(2):]
+        return s
+    s=bump('minSdkVersion',26,s)
+    s=bump('compileSdkVersion',36,s)
+    open(p,'w',encoding='utf-8').write(s)
+    print(s)
+g='android/gradle.properties'
+t=open(g,encoding='utf-8').read() if os.path.exists(g) else ''
+if 'suppressUnsupportedCompileSdk' not in t:
+    open(g,'a',encoding='utf-8').write('\nandroid.suppressUnsupportedCompileSdk=36\n')
+MPVSDK
 
 python3 patch_tv.py .
 
@@ -2146,10 +2923,26 @@ cd android
 chmod +x gradlew
 TASK=assembleDebug
 if [ -n "${KEYSTORE_FILE:-}" ] && [ -f "${KEYSTORE_FILE:-}" ]; then TASK=assembleRelease; fi
-./gradlew $TASK --no-daemon || {
-  sed -i '/media3-ffmpeg-decoder/d' app/build.gradle
-  ./gradlew $TASK --no-daemon
+build_apk() {
+  ./gradlew $TASK --no-daemon || {
+    sed -i '/media3-ffmpeg-decoder/d' app/build.gradle
+    ./gradlew $TASK --no-daemon
+  }
 }
+if ! build_apk; then
+  if [ "${MPV_ON:-0}" = 1 ]; then
+    echo "AVISO: la compilación con MPV falló. Se reintenta SIN MPV (ExoPlayer + VLC)."
+    cp ../.mpvbak/root.build.gradle build.gradle
+    cp ../.mpvbak/app.build.gradle app/build.gradle
+    cp ../.mpvbak/wrapper.properties gradle/wrapper/gradle-wrapper.properties
+    [ -f ../.mpvbak/variables.gradle ] && cp ../.mpvbak/variables.gradle variables.gradle || true
+    [ -f ../.mpvbak/gradle.properties ] && cp ../.mpvbak/gradle.properties gradle.properties || true
+    MPV_ON=0
+    build_apk
+  else
+    exit 1
+  fi
+fi
 cd ..
 
 # Salida final: dist/ULTRA4K.apk
@@ -2166,4 +2959,11 @@ else
   cp android/app/build/outputs/apk/debug/app-debug.apk dist/ULTRA4K.apk
   echo "AVISO: sin llave de firma (KEYSTORE_FILE). Se generó APK debug; la firma cambia en cada equipo, por lo que"
   echo "       las actualizaciones automáticas solo funcionan entre APK firmados con la MISMA llave."
+fi
+
+# ¿Quedó MPV dentro de la APK?
+if unzip -l dist/ULTRA4K.apk | grep -q "libmpv.so"; then
+  echo "VERIFICADO: la APK incluye MPV (ExoPlayer + VLC + MPV)."
+else
+  echo "AVISO: esta APK NO incluye MPV (solo ExoPlayer + VLC)."
 fi

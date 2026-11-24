@@ -54,3 +54,12 @@ Compilación local: BUILD_NUMBER=<n> KEYSTORE_FILE=... KEYSTORE_PASSWORD=... KEY
 - Tiempo máximo en las peticiones (login, canales, películas/series y buscador de actualizaciones): si el servidor no responde ya no se queda cargando; muestra un aviso.
 - PIN: ahora se guarda con SHA-256 (antes un hash muy simple). Los PIN ya creados siguen funcionando y se convierten solos la primera vez que se usan. Nota: un PIN de 4 números protege contra niños, no contra alguien con acceso técnico al equipo.
 - Limpieza del repositorio: se quitaron archivos que la compilación no usa (build-android.sh, build-glystv.sh, README-GLYSTVULTRA.txt y las fuentes repetidas de la raíz; la compilación usa la carpeta fonts/).
+
+## Novedades (v24 — MPV como tercer reproductor)
+- Cadena automática: ExoPlayer → VLC → MPV (libmpv). Si ExoPlayer no puede, abre VLC; si VLC tampoco, abre MPV con el mismo contenido.
+- Ajustes → Motor de reproducción: Automático · VLC · MPV · ExoPlayer (se elige a mano).
+- MPV se carga por reflexión: si no está en la APK, la app sigue funcionando con ExoPlayer y VLC.
+- Controles en MPV: OK pausa, izquierda/derecha ±10 s, arriba audio, abajo subtítulos, MENÚ aspecto.
+- Requisitos: minSdk 26 (Android 8.0+) y Android SDK 36 (el workflow lo instala). La APK crece.
+- Respaldo de compilación: si compilar con MPV falla, el script restaura los archivos de Gradle y compila sin MPV (ExoPlayer + VLC); al final dice si la APK incluye MPV o no.
+- Limitación: cuando se abre MPV, no sigue la cola de capítulos (siguiente episodio); es el último respaldo.

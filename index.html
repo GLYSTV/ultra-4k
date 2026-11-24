@@ -837,7 +837,7 @@ class="btn">Subir archivo<input id="file" type="file" accept=".m3u,.m3u8,.txt" h
     <h3><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></i> Configuración ULTRA4K</h3>
     <div class="v4-option"><div><b>Reproducción automática</b><small>Inicia automáticamente el contenido seleccionado.</small></div><input id="autoPlayOpt" type="checkbox" checked></div>
     <div class="v4-option"><div><b>Continuar viendo</b><small>Guardar el punto donde quedó cada película o episodio.</small></div><input id="resumeOpt" type="checkbox" checked></div>
-    <div class="v4-option"><div><b>Motor de reproducción</b><small id="engineState">Automático: ExoPlayer y, si falla, VLC.</small></div><button class="ghost" id="engineBtn">Automático</button></div>
+    <div class="v4-option"><div><b>Motor de reproducción</b><small id="engineState">Automático: ExoPlayer; si falla, VLC; y si también falla, MPV.</small></div><button class="ghost" id="engineBtn">Automático</button></div>
 <div class="v4-option"><div><b>Modo infantil</b><small>Filtra categorías que no parezcan infantiles.</small></div><input id="kidsOpt" type="checkbox"></div>
     <div class="v4-option"><div><b>Expandir con un toque</b><small>Al elegir un canal se abre directo en pantalla completa. Si está apagado, el primer toque lo reproduce y el segundo lo expande.</small></div><input id="oneTouchOpt" type="checkbox"></div>
     <div class="v4-option"><div><b>Bloquear contenido para adultos</b><small>Oculta carpetas y títulos para adultos. Para desactivarlo se pide el PIN.</small></div><input id="adultOpt" type="checkbox" checked></div>
@@ -2686,14 +2686,14 @@ syncOverlayFav();
 </script>
 
 <script>
-/* Motor de reproducción: auto (ExoPlayer y, si falla, VLC) · vlc · exo */
+/* Motor de reproducción: auto (ExoPlayer → VLC → MPV) · vlc · mpv · exo */
 (function(){
-  var N={auto:['Automático','Automático: ExoPlayer y, si falla, VLC.'],vlc:['VLC','Siempre VLC (libVLC con todos sus códecs).'],exo:['ExoPlayer','Solo ExoPlayer (Media3).']};
+  var N={auto:['Automático','Automático: ExoPlayer; si falla, VLC; y si también falla, MPV.'],vlc:['VLC','Siempre VLC (libVLC con todos sus códecs).'],mpv:['MPV','Siempre MPV (libmpv).'],exo:['ExoPlayer','Solo ExoPlayer (Media3).']};
   function get(){var v='auto';try{v=localStorage.getItem('u4k_engine')||'auto'}catch(e){}return N[v]?v:'auto'}
   function paint(){var v=get(),b=document.getElementById('engineBtn'),s=document.getElementById('engineState');if(b)b.textContent=N[v][0];if(s)s.textContent=N[v][1]}
   window.u4kEngine=get;
   var b=document.getElementById('engineBtn');
-  if(b)b.addEventListener('click',function(){var o=['auto','vlc','exo'],n=o[(o.indexOf(get())+1)%3];try{localStorage.setItem('u4k_engine',n)}catch(e){}paint()});
+  if(b)b.addEventListener('click',function(){var o=['auto','vlc','mpv','exo'],n=o[(o.indexOf(get())+1)%4];try{localStorage.setItem('u4k_engine',n)}catch(e){}paint()});
   paint();
 })();
 </script><script id="glys-autofolder">
