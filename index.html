@@ -779,7 +779,7 @@ placeholder="Contraseña" autocomplete="current-password"><label class="rem"><in
 id="rem" type="checkbox" checked> Recordarme en este dispositivo</label><button
 id="go">INICIAR SESIÓN</button><div id="err"></div></div><div id="qrbox"
 class="hide"><canvas id="qrc"></canvas><p id="qrtxt">Escanea el código QR con tu
-teléfono</p><small id="qrurl"></small></div></div><button class="lnk" id="m3u">Cargar lista
+teléfono</p><small id="qrurl"></small><button type="button" class="ghost" id="qrMove" style="width:100%;height:40px;margin-top:10px;font-size:13px">↔ Mover QR</button></div></div><button class="lnk" id="m3u">Cargar lista
 M3U manualmente</button><button class="lnk hide" id="acctLoginBtn"><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></i> Mis listas guardadas</button><button class="lnk hide" id="acctCancel">← Volver sin cambiar de cuenta</button></section><main id="app" class="hide"><section id="home"><div class="hd"><img src="logo.png" alt=""
 onerror="this.remove()"><b>ULTRA4K<small
 id="hmode"></small></b><span class="sp"></span><span id="hclock"></span><button
@@ -3531,6 +3531,77 @@ button:focus-visible .ln svg,.ghost:focus-visible .ln svg,.btn:focus-visible .ln
     arm(t);
     return prev.apply(this,arguments);
   };
+})();
+</script>
+<style id="u4k-glys-port-css">
+/* Mover QR: en pantallas anchas el QR puede ir a la izquierda del formulario */
+@media (orientation:landscape) and (min-width:700px){.lrow.qrleft #qrbox{order:-1}}
+</style>
+<script id="u4k-glys-port">
+/* Funciones traídas de GLYSTV-PRO: (1) botón "Mover QR" en el inicio de sesión,
+   (2) búsqueda en TODO el catálogo de Películas y Series (antes solo buscaba en la carpeta abierta). */
+(function(){
+  /* ---------- 1) Mover QR ---------- */
+  try{
+    var KEY='u4k_qrside',row=document.querySelector('.lrow'),mv=document.getElementById('qrMove');
+    if(row&&mv){
+      var left=false;try{left=localStorage.getItem(KEY)==='l'}catch(e){}
+      row.classList.toggle('qrleft',left);
+      mv.addEventListener('click',function(){
+        var l=!row.classList.contains('qrleft');
+        row.classList.toggle('qrleft',l);
+        try{localStorage.setItem(KEY,l?'l':'r')}catch(e){}
+      });
+    }
+  }catch(e){}
+
+  /* ---------- 2) Buscar en todo el catálogo ---------- */
+  try{
+    var q=document.getElementById('q'),orig=q&&q.oninput;
+    if(!q||typeof orig!=='function')return;
+    var saved=null,timer=null,tok=0;
+    function searchTab(){return (tab==='vod'||tab==='series')&&!!sess&&!epMode}
+    function restore(){
+      if(saved&&chans===strCache[saved.t+':all']){
+        chans=saved.chans;cur=saved.cur;
+        document.getElementById('msg').textContent=saved.msg;
+      }
+      saved=null;
+    }
+    async function searchAll(tk){
+      var t=tab,k=t+':all',msgEl=document.getElementById('msg');
+      var pm=(saved&&chans===strCache[k])?saved.msg:msgEl.textContent;
+      if(!strCache[k]){
+        msgEl.textContent='Buscando en todo el catálogo… (solo la primera vez)';
+        try{
+          if(!allCache[t])allCache[t]=await api(t==='vod'?'get_vod_streams':'get_series');
+          var ls=allCache[t];if(!Array.isArray(ls))ls=[];
+          strCache[k]=ls.map(function(c){return mapItem(t,c)});
+        }catch(e){if(tk===tok)msgEl.textContent='No se pudo descargar el catálogo completo.';return}
+      }
+      if(tk!==tok||tab!==t||!searchTab()||q.value.trim().length<2)return;
+      var list=strCache[k];
+      if(chans!==list){saved={t:t,chans:chans,cur:cur,msg:pm};chans=list;cur=-1}
+      msgEl.textContent='Resultados en todo el catálogo';
+      render();
+    }
+    q.oninput=function(){
+      clearTimeout(timer);
+      if(searchTab()&&q.value.trim().length>=2){
+        lim=100;var tk=++tok;
+        timer=setTimeout(function(){searchAll(tk)},250);
+        return;
+      }
+      tok++;
+      restore();
+      orig.call(q);
+    };
+    /* Al cerrar la lupa (borra el texto) se vuelve a la carpeta que estaba abierta */
+    var sb=document.getElementById('searchBtn');
+    if(sb)sb.addEventListener('click',function(){
+      if(!q.value.trim()&&saved){tok++;restore();render()}
+    });
+  }catch(e){}
 })();
 </script>
 </body></html>

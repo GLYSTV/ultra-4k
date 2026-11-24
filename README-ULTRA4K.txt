@@ -41,3 +41,11 @@ Nota: esta entrega actualiza el diseño visual y documentación; no reemplaza se
 4. La primera vez, quien tenga instalada una versión anterior (firmada con otra llave) debe desinstalarla una vez.
 5. En el equipo, Android pedirá activar "Instalar apps desconocidas" para ULTRA4K la primera vez que se actualice.
 Compilación local: BUILD_NUMBER=<n> KEYSTORE_FILE=... KEYSTORE_PASSWORD=... KEY_ALIAS=... KEY_PASSWORD=... bash build-glystv-v3.sh  (salida: dist/ULTRA4K.apk)
+
+## Novedades traídas de GLYSTV-PRO
+- Opciones del reproductor → "Buffer": Rápido / Normal / Estable. Se guarda y se aplica en la siguiente reproducción.
+  Normal = el comportamiento anterior. Estable usa más búfer (50/120 s) con tope de 64 MB para TV box con poca memoria.
+- Reproductor: si el decodificador por hardware falla, prueba otro automáticamente (HEVC, VP9, AV1…).
+- Inicio de sesión: botón "↔ Mover QR" para poner el QR a la izquierda o a la derecha (se recuerda).
+- Películas y Series: al escribir 2 o más letras en la lupa se busca en TODO el catálogo, no solo en la carpeta abierta.
+  Al borrar el texto o cerrar la lupa se vuelve a la carpeta que estaba abierta.

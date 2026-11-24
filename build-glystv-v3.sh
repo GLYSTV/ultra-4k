@@ -1249,14 +1249,26 @@ public class PlayerActivity extends Activity {
 
     DefaultRenderersFactory rf =
         new DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)   /* si el decodificador por hardware falla, prueba otro (HEVC/VP9/AV1…) */
             .setExtensionRendererMode(
                 DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
 
-    /* Arranque más rápido: empieza con 0,5 s de vídeo en buffer (antes 2,5 s) */
-    androidx.media3.exoplayer.DefaultLoadControl lc =
+    /* Búfer según Opciones → Buffer (Rápido / Normal / Estable).
+       Normal = comportamiento anterior (arranque con 0,5 s de vídeo). Estable limita a 64 MB para no agotar la memoria de la TV box. */
+    int bufProfile = bufferProfile();
+    int[] bd;
+    switch (bufProfile) {
+      case 0:  bd = new int[]{15000, 30000, 500, 1500};   break; /* Rápido */
+      case 2:  bd = new int[]{50000, 120000, 3000, 6000}; break; /* Estable */
+      default: bd = new int[]{15000, 50000, 500, 2000};   break; /* Normal */
+    }
+    androidx.media3.exoplayer.DefaultLoadControl.Builder lcb =
         new androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15000, 50000, 500, 2000)
-            .build();
+            .setBufferDurationsMs(bd[0], bd[1], bd[2], bd[3]);
+    if (bufProfile == 2) {
+      lcb.setTargetBufferBytes(64 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false);
+    }
+    androidx.media3.exoplayer.DefaultLoadControl lc = lcb.build();
 
     player = new ExoPlayer.Builder(this, rf)
         .setLoadControl(lc)
@@ -1651,6 +1663,7 @@ public class PlayerActivity extends Activity {
     it.add("Velocidad");
     it.add("Temporizador para dormir");
     it.add("Salto: " + (skipMs / 1000) + " s");
+    it.add("Buffer: " + BUF_NAMES[bufferProfile()]);
     if (url != null && url.contains("/live/")) it.add("Formato de respaldo");
     new SideMenu(this)
         .setTitle("Opciones")
@@ -1660,7 +1673,27 @@ public class PlayerActivity extends Activity {
           else if (w == 2) pickSpeed();
           else if (w == 3) pickSleep();
           else if (w == 4) pickSkip();
+          else if (w == 5) pickBuffer();
           else pickFormat();
+        }).show();
+  }
+
+  /* Perfiles de búfer (se guardan y se aplican en la siguiente reproducción) */
+  private static final String[] BUF_NAMES = {"Rápido", "Normal", "Estable"};
+
+  private int bufferProfile() {
+    int b = getSharedPreferences("glystv_prefs", MODE_PRIVATE).getInt("buffer", 1);
+    return (b < 0 || b > 2) ? 1 : b;
+  }
+
+  private void pickBuffer() {
+    new SideMenu(this).setTitle("Buffer")
+        .setItems(new String[]{
+            "Rápido · menos retraso en TV en vivo",
+            "Normal · uso general",
+            "Estable · internet lenta o 4K"}, (d, w) -> {
+          getSharedPreferences("glystv_prefs", MODE_PRIVATE).edit().putInt("buffer", w).apply();
+          say("Buffer: " + BUF_NAMES[w] + " · se aplica en la próxima reproducción");
         }).show();
   }
 
