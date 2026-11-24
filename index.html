@@ -947,6 +947,18 @@ $('hmode').textContent=NP?'nativo v16':'web v16';
 
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})} 
 function enc(x){return encodeURIComponent(x)} 
+/* fetch con tiempo máximo: evita que la app se quede colgada si el servidor no responde */
+function fetchT(url,opt,ms){
+  opt=opt||{};ms=ms||20000;
+  if(typeof AbortController==='undefined')return fetch(url,opt);
+  var ac=new AbortController(),t=setTimeout(function(){ac.abort()},ms);
+  opt.signal=ac.signal;
+  return fetch(url,opt).then(function(r){clearTimeout(t);return r},function(e){
+    clearTimeout(t);
+    if(e&&e.name==='AbortError')throw new Error('El servidor tardó demasiado en responder. Revisa tu conexión o la URL.');
+    throw e;
+  });
+}
 function show(app){
   $('login').classList.toggle('hide',app);
   $('app').classList.toggle('hide',!app);
@@ -1106,7 +1118,7 @@ async function ejecutarLogin(isAuto) {
 
   try {
     var q = '?username='+enc(u)+'&password='+enc(p); 
-    var res = await fetch(s+'/player_api.php'+q);
+    var res = await fetchT(s+'/player_api.php'+q,null,20000);
     if(!res.ok) throw new Error('El servidor respondió con error ('+res.status+'). Revisa la URL del servidor.');
     var d = await res.json(); 
 
@@ -1116,8 +1128,8 @@ async function ejecutarLogin(isAuto) {
 
     var cats = {}; 
     /* categorías y canales se piden a la vez (antes uno tras otro) */
-    var catP = fetch(s+'/player_api.php'+q+'&action=get_live_categories').then(function(r){return r.json()}).catch(function(){return null});
-    var lsP = fetch(s+'/player_api.php'+q+'&action=get_live_streams').then(function(r){return r.json()});
+    var catP = fetchT(s+'/player_api.php'+q+'&action=get_live_categories',null,30000).then(function(r){return r.json()}).catch(function(){return null});
+    var lsP = fetchT(s+'/player_api.php'+q+'&action=get_live_streams',null,90000).then(function(r){return r.json()});
     var catJson = await catP;
     if(Array.isArray(catJson)){
       catJson.forEach(function(c){cats[c.category_id]=c.category_name});
@@ -1295,7 +1307,7 @@ $('ovFavBtn').onclick=function(){var c=cur>=0?chans[cur]:null;if(c)toggleFav(c)}
 
 async function api(a,extra){ 
   var url=sess.s+'/player_api.php?username='+enc(sess.u)+'&password='+enc(sess.p)+'&action='+a+(extra||''); 
-  var r=await fetch(url,{cache:'no-store'}); 
+  var r=await fetchT(url,{cache:'no-store'},60000); 
   if(!r.ok)throw new Error('Error HTTP'); 
   return r.json(); 
 } 
@@ -2144,7 +2156,31 @@ syncOverlayFav();
     oRender();
   };
 
-  function hashPin(p){var h=5381;for(var i=0;i<p.length;i++)h=((h<<5)+h+p.charCodeAt(i))>>>0;return 'p'+h}
+  /* SHA-256 en JS puro (síncrono, funciona también en http://) */
+  function sha256(str){
+    var K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+    var H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+    var b=unescape(encodeURIComponent(str)),l=b.length,w=[],i,j;
+    for(i=0;i<l;i++)w[i>>2]|=b.charCodeAt(i)<<(24-(i%4)*8);
+    w[l>>2]|=0x80<<(24-(l%4)*8);
+    w[(((l+8)>>6)<<4)+15]=l*8;
+    function rr(x,n){return(x>>>n)|(x<<(32-n))}
+    for(i=0;i<w.length;i+=16){
+      var W=[],a=H[0],bb=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+      for(j=0;j<64;j++){
+        if(j<16)W[j]=w[i+j]|0;
+        else{var s0=rr(W[j-15],7)^rr(W[j-15],18)^(W[j-15]>>>3),s1=rr(W[j-2],17)^rr(W[j-2],19)^(W[j-2]>>>10);W[j]=(W[j-16]+s0+W[j-7]+s1)|0}
+        var S1=rr(e,6)^rr(e,11)^rr(e,25),ch=(e&f)^(~e&g),t1=(h+S1+ch+K[j]+W[j])|0;
+        var S0=rr(a,2)^rr(a,13)^rr(a,22),mj=(a&bb)^(a&c)^(bb&c),t2=(S0+mj)|0;
+        h=g;g=f;f=e;e=(d+t1)|0;d=c;c=bb;bb=a;a=(t1+t2)|0;
+      }
+      H[0]=(H[0]+a)|0;H[1]=(H[1]+bb)|0;H[2]=(H[2]+c)|0;H[3]=(H[3]+d)|0;H[4]=(H[4]+e)|0;H[5]=(H[5]+f)|0;H[6]=(H[6]+g)|0;H[7]=(H[7]+h)|0;
+    }
+    return H.map(function(x){return('00000000'+(x>>>0).toString(16)).slice(-8)}).join('');
+  }
+  function hashPin(p){return 'h1:'+sha256('ultra4k:'+p)}
+  /* hash antiguo (djb2): solo para reconocer PIN ya guardados y migrarlos */
+  function hashPinOld(p){var h=5381;for(var i=0;i<p.length;i++)h=((h<<5)+h+p.charCodeAt(i))>>>0;return 'p'+h}
   function askNewPin(){
     var p=prompt('Crea un PIN de 4 números');
     if(p===null)return null;
@@ -2156,7 +2192,9 @@ syncOverlayFav();
     if(!AD.pin)return true;
     var p=prompt('Escribe tu PIN');
     if(p===null)return false;
-    if(hashPin(p.trim())===AD.pin)return true;
+    p=p.trim();
+    if(AD.pin.indexOf('h1:')===0){ if(hashPin(p)===AD.pin)return true; }
+    else if(hashPinOld(p)===AD.pin){ setPin(p); return true; } /* migra el PIN antiguo a SHA-256 */
     toast('PIN incorrecto');return false;
   }
   function setPin(p){AD.pin=hashPin(p);lsSet('glys_pin',AD.pin)}
@@ -3355,7 +3393,7 @@ button:focus-visible .ln svg,.ghost:focus-visible .ln svg,.btn:focus-visible .ln
   function check(manual){
     if(busy)return Promise.resolve();
     if(manual)state('Buscando actualización…');
-    return fetch(API,{cache:'no-store',headers:{'Accept':'application/vnd.github+json'}})
+    return fetchT(API,{cache:'no-store',headers:{'Accept':'application/vnd.github+json'}},15000)
       .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})
       .then(function(j){
         var m=/(\d+)\s*$/.exec(j.tag_name||''),n=m?+m[1]:0;

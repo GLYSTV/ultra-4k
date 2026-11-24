@@ -49,3 +49,8 @@ Compilación local: BUILD_NUMBER=<n> KEYSTORE_FILE=... KEYSTORE_PASSWORD=... KEY
 - Inicio de sesión: botón "↔ Mover QR" para poner el QR a la izquierda o a la derecha (se recuerda).
 - Películas y Series: al escribir 2 o más letras en la lupa se busca en TODO el catálogo, no solo en la carpeta abierta.
   Al borrar el texto o cerrar la lupa se vuelve a la carpeta que estaba abierta.
+
+## Novedades (v23 — estabilidad y seguridad)
+- Tiempo máximo en las peticiones (login, canales, películas/series y buscador de actualizaciones): si el servidor no responde ya no se queda cargando; muestra un aviso.
+- PIN: ahora se guarda con SHA-256 (antes un hash muy simple). Los PIN ya creados siguen funcionando y se convierten solos la primera vez que se usan. Nota: un PIN de 4 números protege contra niños, no contra alguien con acceso técnico al equipo.
+- Limpieza del repositorio: se quitaron archivos que la compilación no usa (build-android.sh, build-glystv.sh, README-GLYSTVULTRA.txt y las fuentes repetidas de la raíz; la compilación usa la carpeta fonts/).
