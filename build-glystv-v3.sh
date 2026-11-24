@@ -1491,6 +1491,28 @@ public class PlayerActivity extends Activity {
     return id != 0 && f.getId() == id;
   }
 
+  /* Opciones → Reproducir con MPV: abre el mismo contenido con MPV (libmpv) */
+  private void launchMpv() {
+    try {
+      String u = (qUrls.length > 0 && qIdx < qUrls.length) ? qUrls[qIdx] : getIntent().getStringExtra("url");
+      if (u == null || u.isEmpty()) u = url;
+      if (u == null || u.isEmpty()) return;
+      long pos = 0;
+      try { if (player != null && !player.isCurrentMediaItemLive() && player.getDuration() > 0) pos = player.getCurrentPosition(); } catch (Throwable t) { pos = 0; }
+      android.content.Intent i = new android.content.Intent(this, AltPlayerActivity.class);
+      i.putExtra("url", u);
+      String t = getIntent().getStringExtra("title");
+      i.putExtra("title", t == null ? "" : t);
+      i.putExtra("engine", "mpv");
+      i.putExtra("pos", pos);
+      try { if (player != null) player.stop(); } catch (Throwable t2) { /* ignorar */ }
+      startActivity(i);
+      finish();
+    } catch (Throwable t) {
+      say("No se pudo abrir MPV");
+    }
+  }
+
   /* Si ExoPlayer no puede, se abre el mismo contenido con VLC */
   private void launchVlc() {
     android.content.Intent i = new android.content.Intent(this, VlcPlayerActivity.class);
@@ -1683,6 +1705,8 @@ public class PlayerActivity extends Activity {
     it.add("Temporizador para dormir");
     it.add("Salto: " + (skipMs / 1000) + " s");
     it.add("Buffer: " + BUF_NAMES[bufferProfile()]);
+    it.add("Reproducir con VLC");
+    it.add("Reproducir con MPV");
     if (url != null && url.contains("/live/")) it.add("Formato de respaldo");
     new SideMenu(this)
         .setTitle("Opciones")
@@ -1693,6 +1717,8 @@ public class PlayerActivity extends Activity {
           else if (w == 3) pickSleep();
           else if (w == 4) pickSkip();
           else if (w == 5) pickBuffer();
+          else if (w == 6) launchVlc();
+          else if (w == 7) launchMpv();
           else pickFormat();
         }).show();
   }
