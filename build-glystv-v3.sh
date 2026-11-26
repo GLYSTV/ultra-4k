@@ -225,7 +225,8 @@ import okhttp3.dnsoverhttps.DnsOverHttps;
 final class NetKit {
   private static final long TTL_MS = 3 * 60 * 1000L;
   private static final ConcurrentHashMap<String, Object[]> CACHE = new ConcurrentHashMap<>();
-  private static final ExecutorService POOL = Executors.newCachedThreadPool();
+  private static final ExecutorService POOL = Executors.newFixedThreadPool(4);
+  private static final ExecutorService WARM_POOL = Executors.newFixedThreadPool(2);
   private static DnsOverHttps doh;
   private static boolean dohTried = false;
   private static OkHttpClient base;
@@ -301,7 +302,7 @@ final class NetKit {
   /* Solo resuelve el nombre del servidor (no abre el canal, para no gastar conexiones del proveedor) */
   static void warm(final String url) {
     if (url == null) return;
-    POOL.execute(() -> {
+    WARM_POOL.execute(() -> {
       try {
         String h = URI.create(url.trim()).getHost();
         if (h != null) DNS.lookup(h);
@@ -353,7 +354,6 @@ public class NativePlayerPlugin extends Plugin {
   private boolean full = false;
   private int rx = 0, ry = 0, rw = 400, rh = 225;
   private String curUrl = "";
-  private boolean triedTs = false;
 
   /* Controles en pantalla completa (TV en vivo) */
   private LinearLayout ctl;
@@ -411,7 +411,6 @@ public class NativePlayerPlugin extends Plugin {
         attach();
         if (!url.equals(curUrl)) {
           curUrl = url;
-          triedTs = false;
           start(url);
         } else {
           player.play();
@@ -495,9 +494,14 @@ public class NativePlayerPlugin extends Plugin {
     androidx.media3.datasource.DataSource.Factory http = NetKit.factory("VLC/3.0.18 LibVLC/3.0.18", 8000, 15000);
     DefaultRenderersFactory rf = new DefaultRenderersFactory(getActivity())
         .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
+    int profile = getActivity().getSharedPreferences("glystv_prefs", android.content.Context.MODE_PRIVATE).getInt("buffer", 1);
+    int[] previewBuffer = profile == 0 ? new int[]{2500, 10000, 500, 1500} :
+        (profile == 2 ? new int[]{10000, 30000, 2000, 4000} : new int[]{5000, 15000, 1000, 2500});
     androidx.media3.exoplayer.DefaultLoadControl pvLc =
         new androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(10000, 25000, 500, 1500)
+            .setBufferDurationsMs(previewBuffer[0], previewBuffer[1], previewBuffer[2], previewBuffer[3])
+            .setTargetBufferBytes(profile == 0 ? 16 * 1024 * 1024 : (profile == 2 ? 40 * 1024 * 1024 : 24 * 1024 * 1024))
+            .setBackBuffer(0, false)
             .build();
     player = new ExoPlayer.Builder(getActivity(), rf)
         .setLoadControl(pvLc)
@@ -506,15 +510,10 @@ public class NativePlayerPlugin extends Plugin {
     player.addListener(new Player.Listener() {
       @Override
       public void onPlayerError(PlaybackException e) {
-        if (!triedTs && curUrl.contains(".m3u8")) {
-          triedTs = true;
-          curUrl = curUrl.replace(".m3u8", ".ts");
-          start(curUrl);
-        } else {
-          JSObject o = new JSObject();
-          o.put("message", describe(e));
-          notifyListeners("error", o);
-        }
+        // Mantener la URL original: un manifiesto HLS no equivale necesariamente a un .ts.
+        JSObject o = new JSObject();
+        o.put("message", describe(e));
+        notifyListeners("error", o);
       }
     });
     pview = new PlayerView(getActivity());
@@ -607,6 +606,7 @@ public class NativePlayerPlugin extends Plugin {
   }
 
   private void start(String url) {
+    NetKit.warm(url);
     audioIdx = -1;
     audioName = "";
     try {
@@ -1009,10 +1009,14 @@ public class VlcPlayerActivity extends Activity {
 
   private void start() {
     status.setText("Cargando con VLC…");
+    NetKit.warm(url);
     Media m = new Media(libVLC, Uri.parse(url));
     m.setHWDecoderEnabled(true, false);
     m.addOption(":http-user-agent=VLC/3.0.18 LibVLC/3.0.18");
-    m.addOption(":network-caching=1500");
+    int profile = getSharedPreferences("glystv_prefs", MODE_PRIVATE).getInt("buffer", 1);
+    int networkCache = profile == 0 ? 500 : (profile == 2 ? 2500 : 1200);
+    m.addOption(":network-caching=" + networkCache);
+    m.addOption(":live-caching=" + networkCache);
     mp.setMedia(m);
     m.release();
     mp.play();
@@ -1036,16 +1040,10 @@ public class VlcPlayerActivity extends Activity {
         length = e.getLengthChanged();
         break;
       case MediaPlayer.Event.EncounteredError:
-        if (!retried && url.contains(".m3u8")) {
-          retried = true;
-          url = url.replace(".m3u8", ".ts");
-          status.setText("Probando formato .ts…");
-          start();
-        } else {
-          if (getIntent().getBooleanExtra("fromExo", false) && launchMpv()) break;
-          status.setText("VLC no pudo reproducir este contenido.");
-          showBar(true);
-        }
+        // No alterar la URL: el servidor puede ofrecer HLS sin ofrecer un endpoint .ts equivalente.
+        if (getIntent().getBooleanExtra("fromExo", false) && launchMpv()) break;
+        status.setText("VLC no pudo reproducir este contenido.");
+        showBar(true);
         break;
       case MediaPlayer.Event.EndReached:
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(key()).apply();
@@ -1063,6 +1061,12 @@ public class VlcPlayerActivity extends Activity {
       String t = getIntent().getStringExtra("title");
       i.putExtra("title", t == null ? "" : t);
       i.putExtra("engine", "mpv");
+      // Conservar la cola de episodios/canales si el reproductor automático llega al último respaldo.
+      if (qUrls != null && qUrls.length > 0) {
+        i.putExtra("urls", android.text.TextUtils.join("\n", qUrls));
+        i.putExtra("titles", android.text.TextUtils.join("\n", qTitles));
+        i.putExtra("idx", qIdx);
+      }
       startActivity(i);
       finish();
       return true;
@@ -1369,7 +1373,7 @@ public class PlayerActivity extends Activity {
       addExtraButtons(pv, root);
     });
 
-    androidx.media3.datasource.DataSource.Factory http = NetKit.factory("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36", 8000, 8000);
+    androidx.media3.datasource.DataSource.Factory http = NetKit.factory("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36", 8000, 20000);
 
     DefaultRenderersFactory rf =
         new DefaultRenderersFactory(this)
@@ -1381,17 +1385,18 @@ public class PlayerActivity extends Activity {
        Normal = comportamiento anterior (arranque con 0,5 s de vídeo). Estable limita a 64 MB para no agotar la memoria de la TV box. */
     int bufProfile = bufferProfile();
     int[] bd;
+    int targetBytes;
     switch (bufProfile) {
-      case 0:  bd = new int[]{15000, 30000, 500, 1500};   break; /* Rápido */
-      case 2:  bd = new int[]{50000, 120000, 3000, 6000}; break; /* Estable */
-      default: bd = new int[]{15000, 50000, 500, 2000};   break; /* Normal */
+      case 0:  bd = new int[]{2500, 10000, 500, 1500}; targetBytes = 16 * 1024 * 1024; break; /* Rápido: zapping ágil */
+      case 2:  bd = new int[]{10000, 30000, 2000, 4000}; targetBytes = 40 * 1024 * 1024; break; /* Estable: sin reservar 120 s */
+      default: bd = new int[]{5000, 15000, 1000, 2500}; targetBytes = 24 * 1024 * 1024; break; /* Normal */
     }
     androidx.media3.exoplayer.DefaultLoadControl.Builder lcb =
         new androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(bd[0], bd[1], bd[2], bd[3]);
-    if (bufProfile == 2) {
-      lcb.setTargetBufferBytes(64 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false);
-    }
+            .setBufferDurationsMs(bd[0], bd[1], bd[2], bd[3])
+            .setTargetBufferBytes(targetBytes)
+            .setBackBuffer(0, false)
+            .setPrioritizeTimeOverSizeThresholds(true);
     androidx.media3.exoplayer.DefaultLoadControl lc = lcb.build();
 
     player = new ExoPlayer.Builder(this, rf)
@@ -1407,18 +1412,14 @@ public class PlayerActivity extends Activity {
 
       @Override
       public void onPlayerError(PlaybackException e) {
-        String info = describe(e);
-
-        if (!retried && url.contains(".m3u8")) {
-          retried = true;
-          firstInfo = info;
-          url = url.replace(".m3u8", ".ts");
-          status.setText("Cargando…");
-          start();
-        } else if (!"exo".equals(getIntent().getStringExtra("engine"))) {
+        String selectedEngine = getIntent().getStringExtra("engine");
+        // En modo Automático, VLC recibe exactamente la misma URL HLS/TS/MP4.
+        // Si el usuario fijó ExoPlayer, respetamos su selección y mostramos el error.
+        if (selectedEngine == null || "auto".equals(selectedEngine)) {
+          status.setText("Probando otro reproductor…");
           launchVlc();
         } else {
-          status.setText("No se pudo cargar este contenido.");
+          status.setText("ExoPlayer no pudo cargar este contenido.");
         }
       }
 
@@ -1946,6 +1947,7 @@ public class PlayerActivity extends Activity {
   }
 
   private void start() {
+    NetKit.warm(url);
     t0 = android.os.SystemClock.elapsedRealtime();
     long saved = 0;
     if (!retried) saved = getSharedPreferences(PREFS, MODE_PRIVATE).getLong(resumeKey, 0);
@@ -2431,6 +2433,7 @@ public class AltPlayerActivity extends Activity implements SurfaceHolder.Callbac
   }
 
   private void startMpv() throws Exception {
+    NetKit.warm(curUrl);
     synchronized (MPV_LOCK) {
       mpvCls = Class.forName("dev.jdtech.mpv.MPVLib");
       mpvObj = null;
@@ -2451,10 +2454,13 @@ public class AltPlayerActivity extends Activity implements SurfaceHolder.Callbac
       mpvOpt("ao", "audiotrack,opensles");
       mpvOpt("user-agent", UA);
       mpvOpt("cache", "yes");
-      mpvOpt("cache-secs", "20");
-      mpvOpt("demuxer-max-bytes", "67108864");
-      mpvOpt("network-timeout", "20");
-      mpvOpt("tls-verify", "no");
+      int profile = getSharedPreferences("glystv_prefs", MODE_PRIVATE).getInt("buffer", 1);
+      int cacheSecs = profile == 0 ? 5 : (profile == 2 ? 20 : 10);
+      String cacheBytes = profile == 0 ? "12582912" : (profile == 2 ? "33554432" : "20971520");
+      mpvOpt("cache-secs", String.valueOf(cacheSecs));
+      mpvOpt("demuxer-max-bytes", cacheBytes);
+      mpvOpt("network-timeout", "25");
+      mpvOpt("tls-verify", "yes");
       mpvOpt("keep-open", "no");
       mpvOpt("idle", "yes");
       mpvOpt("save-position-on-quit", "no");
@@ -3006,7 +3012,7 @@ cp android/gradle/wrapper/gradle-wrapper.properties .mpvbak/wrapper.properties
 [ -f android/variables.gradle ] && cp android/variables.gradle .mpvbak/variables.gradle || true
 [ -f android/gradle.properties ] && cp android/gradle.properties .mpvbak/gradle.properties || true
 MPV_ON=1
-sed -i '/^dependencies {/a\    implementation "dev.jdtech.mpv:libmpv:1.0.0"\n    implementation "androidx.media3:media3-datasource-okhttp:1.9.0"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0"' android/app/build.gradle
+sed -i '/^dependencies {/a\    implementation "dev.jdtech.mpv:libmpv:1.0.0"\n    implementation "androidx.media3:media3-datasource-okhttp:1.4.1"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0"' android/app/build.gradle
 cat >> android/app/build.gradle <<'MPVGRADLE'
 
 // ultra-mpv: VLC y MPV traen librerías nativas repetidas
