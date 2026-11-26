@@ -810,8 +810,8 @@ lista</button><div id="msg"></div><div id="list"></div></div><div id="right"><di
 <div class="pv-top" id="pvTop"><span id="pvTitle"></span><span id="pvLive" class="pv-livebadge hide">● EN VIVO</span></div>
 <div class="player-overlay-controls" id="pvCtl">
   <div class="pv-sec">
-    <button class="player-ctrl-btn pv-pill" id="pvAspectBtn" title="Relación de aspecto"><span id="pvAspTxt">Normal</span><span class="pv-pill-i">▣</span></button>
-    <button class="player-ctrl-btn pv-pill" id="pvAudioBtn" title="Audio"><span id="pvAudTxt">Audio<br>Automática</span><span class="pv-pill-i" id="pvAudIco">🔊</span></button>
+    <button class="player-ctrl-btn pv-pill" id="pvAspectBtn" title="Relación de aspecto" aria-label="Relación de aspecto"><span class="pv-pill-i">▣</span><span id="pvAspTxt">Normal</span></button>
+    <button class="player-ctrl-btn pv-pill" id="pvAudioBtn" title="Seleccionar audio" aria-label="Seleccionar audio"><span class="pv-pill-i" id="pvAudIco">🔊</span><span id="pvAudTxt">Audio automático</span></button>
   </div>
   <div class="pv-timerow pv-timerow-simple">
     <button class="player-ctrl-btn pv-mini" id="pvPlay" title="Pausa / Reproducir" aria-label="Pausa o reproducir">⏸</button>
@@ -819,10 +819,10 @@ lista</button><div id="msg"></div><div id="list"></div></div><div id="right"><di
   </div>
   <input type="range" id="pvSeek" min="0" max="100" step="any" value="0" aria-label="Posición">
   <div class="pv-btns">
-    <button class="player-ctrl-btn" id="ovBackBtn" title="Volver">‹ Volver</button>
-    <button class="player-ctrl-btn" id="playerOptionsBtn" title="Opciones del reproductor">⚙ Opciones</button>
-    <button class="player-ctrl-btn pv-hl" id="ovFullBtn" title="Pantalla completa">⛶ Pantalla</button>
-    <button class="player-ctrl-btn" id="ovFavBtn" title="Favorito">☆ Favorito</button>
+    <button class="player-ctrl-btn pv-icon-btn" id="ovBackBtn" title="Volver" aria-label="Volver">‹</button>
+    <button class="player-ctrl-btn pv-icon-btn" id="playerOptionsBtn" title="Opciones del reproductor" aria-label="Opciones">⚙</button>
+    <button class="player-ctrl-btn pv-icon-btn pv-hl" id="ovFullBtn" title="Pantalla completa" aria-label="Pantalla completa">⛶</button>
+    <button class="player-ctrl-btn pv-icon-btn" id="ovFavBtn" title="Favorito" aria-label="Favorito">☆</button>
   </div>
 </div></div><div
 style="display:flex;align-items:center;gap:10px;margin:6px 0 8px"><div id="now"
@@ -3675,4 +3675,43 @@ button:focus-visible .ln svg,.ghost:focus-visible .ln svg,.btn:focus-visible .ln
 (function(){function L(){try{var o=screen.orientation;if(o&&o.lock)o.lock('landscape').catch(function(){})}catch(e){}}
 L();document.addEventListener('click',L,{once:true});document.addEventListener('keydown',L,{once:true})})();
 </script>
+
+<style id="u4-tv-compact-controls">
+/* ULTRA4K TV Online: controles compactos, agrupados y aptos para mando */
+#pv .player-overlay-controls{
+  box-sizing:border-box!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;
+  width:100%!important;display:flex!important;flex-direction:column!important;align-items:center!important;
+  justify-content:flex-end!important;gap:9px!important;padding:46px 18px 16px!important;
+  background:linear-gradient(0deg,rgba(0,0,0,.88) 0%,rgba(0,0,0,.28) 62%,transparent 100%)!important;
+}
+#pv .pv-sec{display:flex!important;align-self:flex-end!important;justify-content:flex-end!important;gap:8px!important;flex-wrap:wrap!important}
+#pv .pv-btns{display:flex!important;align-self:center!important;justify-content:center!important;align-items:center!important;
+  width:auto!important;max-width:100%!important;gap:9px!important;flex-wrap:nowrap!important}
+#pv .pv-btns .player-ctrl-btn,#pv .player-ctrl-btn{
+  box-sizing:border-box!important;flex:0 0 auto!important;min-width:0!important;
+  min-height:42px!important;padding:7px 12px!important;font-size:14px!important;line-height:1!important;
+  border-radius:12px!important;box-shadow:0 3px 12px rgba(0,0,0,.28)!important;
+  backdrop-filter:blur(12px)!important;-webkit-backdrop-filter:blur(12px)!important;
+}
+#pv .pv-btns .pv-icon-btn{width:46px!important;height:42px!important;padding:0!important;font-size:22px!important}
+#pv .pv-sec .pv-pill{min-width:0!important;max-width:180px!important;height:38px!important;min-height:38px!important;
+  padding:6px 11px!important;gap:8px!important;font-size:12px!important;white-space:nowrap!important}
+#pv .pv-pill-i{width:auto!important;font-size:16px!important}
+#pv .pv-timerow{align-self:flex-start!important}
+#pv.pv-live #pvSeek{display:none!important}
+#pv.pv-live .pv-timerow{display:none!important}
+#pv .player-ctrl-btn:focus-visible{outline:3px solid #d9f5a8!important;outline-offset:3px!important;
+  box-shadow:0 0 0 6px rgba(140,198,63,.28),0 5px 18px rgba(0,0,0,.45)!important;transform:scale(1.06)!important}
+#pv .player-ctrl-btn.pv-hl{background:linear-gradient(135deg,#568d20,#83bd37)!important}
+@media(max-width:700px){
+ #pv .player-overlay-controls{padding:38px 9px 10px!important;gap:7px!important}
+ #pv .pv-btns{gap:6px!important}
+ #pv .pv-btns .pv-icon-btn{width:40px!important;height:38px!important;font-size:19px!important}
+ #pv .pv-sec .pv-pill{height:34px!important;min-height:34px!important;padding:5px 8px!important;font-size:11px!important}
+}
+@media(prefers-reduced-motion:no-preference){
+ #pv .player-ctrl-btn{transition:transform .14s ease,background .14s ease,border-color .14s ease!important}
+}
+</style>
+
 </body></html>
