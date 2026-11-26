@@ -3575,6 +3575,34 @@ button:focus-visible .ln svg,.ghost:focus-visible .ln svg,.btn:focus-visible .ln
 /* Mover QR: en pantallas anchas el QR puede ir a la izquierda del formulario */
 @media (orientation:landscape) and (min-width:700px){.lrow.qrleft #qrbox{order:-1}}
 </style>
+<style id="u4-12rows">
+/* ULTRA4K · exactamente 12 carpetas (col. 1) y 12 canales (col. 2) visibles, app 100% horizontal */
+@media (orientation:landscape) and (min-width:700px){
+  html body #lv.panes{--u4g:3px;--u4rh:calc((100dvh - 46px - 6px - 11*var(--u4g))/12)}
+  /* barra superior más baja (se mantiene ULTRA4K, Carpetas y la lupa) */
+  html body #lv.panes #glysTop{height:34px!important;margin:0 0 4px!important;padding:0 4px!important}
+  html body #lv.panes #glysTop .brand4k{font-size:18px!important}
+  html body #lv.panes #glysTop .topsb{height:30px!important;min-width:36px!important;padding:0 10px!important;border-radius:10px!important}
+  html body #lv.panes #glysTop .topsb .ln{width:18px!important;height:18px!important}
+  html body #lv.panes #glysTop .topsb small{font-size:12px!important}
+  /* contenedores: columna flexible sin relleno extra, 12 filas iguales */
+  html body #lv.panes #picker #cats,
+  html body #lv.panes #list:not(.grid){display:flex!important;flex-direction:column!important;gap:var(--u4g)!important;padding:2px 4px 2px 3px!important;margin:0!important;scroll-padding:0!important;box-sizing:border-box!important}
+  html body #lv.panes #picker #cats{flex:1 1 0!important}
+  html body #lv.panes #picker #cats .cc,
+  html body #lv.panes #list:not(.grid) .ch{flex:0 0 calc((100% - 11*var(--u4g))/12)!important;height:calc((100% - 11*var(--u4g))/12)!important;min-height:0!important;max-height:none!important;box-sizing:border-box!important;overflow:hidden!important;padding:0 8px!important;margin:0!important;white-space:nowrap!important;border-radius:8px!important;font-size:clamp(6px,calc(var(--u4rh)*.56),13px)!important;line-height:1!important;align-items:center!important}
+  html body #lv.panes #picker #cats .cc span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:inherit!important;line-height:1!important}
+  html body #lv.panes #picker #cats .cc em{font-size:inherit!important;line-height:1!important}
+  html body #lv.panes #list:not(.grid) .ch .nx{font-size:clamp(6px,calc(var(--u4rh)*.56),14px)!important;line-height:1!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+  html body #lv.panes #list:not(.grid) .ch .nx *{font-size:inherit!important;line-height:1!important}
+  html body #lv.panes #list:not(.grid) .ch .nm{flex:0 0 auto!important;min-width:1.6em;font-size:clamp(6px,calc(var(--u4rh)*.5),11px)!important;line-height:1!important}
+  html body #lv.panes #list:not(.grid) .ch img{width:calc(100% * 0 + var(--u4rh) - 4px)!important;height:calc(var(--u4rh) - 4px)!important;flex:0 0 calc(var(--u4rh) - 4px)!important;max-height:100%!important}
+  html body #lv.panes #list:not(.grid) .ch .g{display:none!important}
+  /* foco más fino para que no se corte entre filas */
+  html body #lv.panes #picker #cats .cc:focus,html body #lv.panes #list:not(.grid) .ch:focus{outline:2px solid #fff!important;outline-offset:-2px!important;box-shadow:none!important}
+}
+</style>
+
 <script id="u4k-glys-port">
 /* Funciones traídas de GLYSTV-PRO: (1) botón "Mover QR" en el inicio de sesión,
    (2) búsqueda en TODO el catálogo de Películas y Series (antes solo buscaba en la carpeta abierta). */
@@ -3641,5 +3669,10 @@ button:focus-visible .ln svg,.ghost:focus-visible .ln svg,.btn:focus-visible .ln
     });
   }catch(e){}
 })();
+</script>
+<script id="u4-landscape">
+/* ULTRA4K · fuerza horizontal (en la APK ya lo fija el manifiesto; esto cubre navegador/WebView) */
+(function(){function L(){try{var o=screen.orientation;if(o&&o.lock)o.lock('landscape').catch(function(){})}catch(e){}}
+L();document.addEventListener('click',L,{once:true});document.addEventListener('keydown',L,{once:true})})();
 </script>
 </body></html>

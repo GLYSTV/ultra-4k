@@ -42,6 +42,16 @@ if "LEANBACK_LAUNCHER" not in s:
     if not m: sys.exit("No encontre <activity> en el manifest")
     s = s[:m.end(1)] + intent + "        " + s[m.start(2):]
 
+# 3.1) app 100% horizontal (la actividad principal)
+m = re.search(r'<activity\b[^>]*>', s)
+if m:
+    tag = m.group(0)
+    if 'android:screenOrientation' in tag:
+        new = re.sub(r'android:screenOrientation="[^"]*"', 'android:screenOrientation="sensorLandscape"', tag)
+    else:
+        new = tag[:-1] + ' android:screenOrientation="sensorLandscape">'
+    s = s.replace(tag, new, 1)
+
 open(mf, "w", encoding="utf-8").write(s)
 
 # 4) banner.png
