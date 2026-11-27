@@ -599,6 +599,7 @@ button:focus-visible,.ghost:focus-visible,.btn:focus-visible{
 .logo .s{color:var(--biche)!important;letter-spacing:6px}
 .box button,#go{background:linear-gradient(110deg,var(--biche-deep),var(--biche))!important;color:#fff!important}
 .lnk{background:none!important}
+#topRefresh.spin svg{animation:u4kRel 1s linear infinite}@keyframes u4kRel{to{transform:rotate(360deg)}}
 </style><style id="ultra4k-premium-refresh">
 /* ULTRA4K PREMIUM · renovación visual integral · mantiene intacta la lógica de la app */
 :root{
@@ -858,7 +859,7 @@ data-t="vod">Películas</button><button data-t="series">Series</button><button
 data-t="favs"></button></div></div><div id="cbar"><button class="ghost"
 id="cprev">‹</button><button id="cname">Elegir categoría</button><button class="ghost"
 id="cnext">›</button><button class="ghost" id="refreshTab" title="Actualizar contenido"
-style="font-size:15px;padding:8px 12px"></button></div><div id="glysTop"><span class="brand4k" id="topBrand">ULTRA4K</span><button class="ghost topsb" id="topCatSearch" title="Buscar carpeta" aria-label="Buscar carpeta"><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></i><small>Carpetas</small></button><span class="topsp"></span><button class="ghost topsb" id="topSearch" title="Buscar" aria-label="Buscar"><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></i></button></div><div id="body"><div id="left">
+style="font-size:15px;padding:8px 12px"></button></div><div id="glysTop"><span class="brand4k" id="topBrand">ULTRA4K</span><button class="ghost topsb" id="topCatSearch" title="Buscar carpeta" aria-label="Buscar carpeta"><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></i><small>Carpetas</small></button><span class="topsp"></span><button class="ghost topsb" id="topRefresh" title="Actualizar contenido" aria-label="Actualizar contenido"><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg></i></button><button class="ghost topsb" id="topSearch" title="Buscar" aria-label="Buscar"><i class="ln"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></i></button></div><div id="body"><div id="left">
 
                                               🔍
 <div class="search-header-container"><div class="search-wrapper"><button id="searchBtn"
@@ -1421,9 +1422,14 @@ function stepCat(d){
 
 async function refreshContent(forceReload){ 
   if(!sess)return; 
+  var keep=curCat,t0=tab,rb=$('topRefresh');
+  if(rb)rb.classList.add('spin');
   $('msg').textContent='Actualizando lista...'; 
   if(forceReload){catsCache={};strCache={};allCache={};} 
-  loadTab(tab, true); 
+  try{
+    await loadTab(tab, true);
+    if(keep!==''&&keep!=null&&tab===t0&&(t0==='vod'||t0==='series')&&catItems.some(function(c){return String(c.id)===String(keep)}))selectCat(keep);
+  }finally{if(rb)rb.classList.remove('spin')}
 } 
 
 $('refreshCats').onclick=function(){refreshContent(true)};
@@ -1477,6 +1483,15 @@ async function loadCounts(t){
   }
 }
 
+/* Carpetas de películas cuyas primeras EST_N pasan al final: ESTRENOS 2026, SUPER ESTRENOS, PELICULAS 2025 */
+var EST_N=100,EST_RE=/estrenos?\s*2026|s[uú]per\s*estrenos?|pel[ií]culas?\s*2025/i;
+function ordEst(t,id,l){
+  if(t!=='vod'||!Array.isArray(l)||l.length<=EST_N)return l;
+  var ci=catItems.filter(function(c){return String(c.id)===String(id)})[0];
+  if(!ci||!EST_RE.test(ci.name||''))return l;
+  return l.slice(EST_N).concat(l.slice(0,EST_N));
+}
+
 async function loadCat(id){ 
   if(id===''||id==null)return; 
   var t=tab,k=t+':'+id;lim=100;epMode=false;$('q').value='';$('back').classList.add('hide');$('msg').textContent='Cargando…';chans=[];render(); 
@@ -1491,7 +1506,7 @@ async function loadCat(id){
         if(!ls||!ls.length)ls=await api(t==='vod'?'get_vod_streams':'get_series','&category_id='+enc(id));
       }
       if(!Array.isArray(ls))ls=[];
-      strCache[k]=ls.map(function(c){return mapItem(t,c)}); 
+      strCache[k]=ordEst(t,id,ls.map(function(c){return mapItem(t,c)})); 
     } 
     if(tab!==t)return; 
     chans=strCache[k];cur=-1;$('msg').textContent=chans.length+' elementos';render(); 
@@ -3407,6 +3422,7 @@ button:focus-visible .ln svg,.ghost:focus-visible .ln svg,.btn:focus-visible .ln
   }
   function openQ(){if(!lv.classList.contains('sq'))lv.classList.add('sq');var q=$('q');q.classList.add('expanded');try{q.focus()}catch(x){}}
   if($('topSearch'))$('topSearch').onclick=function(){toggle('sq',$('q'))};
+  if($('topRefresh'))$('topRefresh').onclick=function(){refreshContent(true)};
   if($('topCatSearch'))$('topCatSearch').onclick=function(){toggle('sc',$('cq'))};
   var sb=$('searchBtn'),old=sb&&sb.onclick;
   if(sb)sb.onclick=function(e){
